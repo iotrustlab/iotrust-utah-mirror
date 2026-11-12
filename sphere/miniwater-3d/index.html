@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MiniWater 3D replay</title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #0e202b; }
+    #unity-canvas { display: block; width: 100%; height: 100%; background: #0e202b; }
+    #status { position: absolute; top: 1rem; left: 1rem; color: #d5edf4;
+      font: 14px system-ui, sans-serif; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <canvas id="unity-canvas" width=960 height=600 tabindex="-1"></canvas>
+  <div id="status" role="status">Loading 3D replay…</div>
+  <script>
+    (() => {
+      'use strict';
+      let unity = null;
+      let pendingFrame = null;
+      let pendingView = null;
+      let pendingTour = null;
+      let pendingSelection = null;
+      const rev = new URLSearchParams(window.location.search).get('rev');
+      const cacheSuffix = rev && /^[a-f0-9]{7,64}$/i.test(rev) ? '?rev=' + rev : '';
+      const assetUrl = (name) => 'Build/' + name + cacheSuffix;
+      const status = document.getElementById('status');
+      const reportError = (message) => {
+        status.textContent = message;
+        if (window.parent !== window) {
+          window.parent.postMessage({ type: 'sphere.miniwater.unity.error', message }, window.location.origin);
+        }
+      };
+      const applyFrame = (frame) => {
+        if (!unity) { pendingFrame = frame; return; }
+        try {
+          unity.SendMessage('Offline Replay Driver', 'ApplyExternalFrame', JSON.stringify(frame));
+        } catch (_) {
+          reportError('Could not send the replay frame to Unity.');
+        }
+      };
+      const sendControl = (method, value) => {
+        if (!unity) return false;
+        try {
+          unity.SendMessage('Offline Replay Driver', method, String(value));
+          return true;
+        } catch (_) {
+          reportError('Could not update the 3D camera or selection.');
+          return false;
+        }
+      };
+      // The parent owns replay/navigation shortcuts while this canvas has focus.
+      // Keep the relay intentionally small; the floor never forwards arbitrary input.
+      window.addEventListener('keydown', (event) => {
+        if (window.parent === window) return;
+        const key = event.key === ' ' ? 'Space' : event.key;
+        if (!['Space', 'ArrowLeft', 'ArrowRight', 'Escape', '0', '1', '2', '3'].includes(key)) return;
+        window.parent.postMessage({ type: 'sphere.miniwater.unity.key', key }, window.location.origin);
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }, true);
+      window.addEventListener('message', (event) => {
+        if (event.source !== window.parent || event.origin !== window.location.origin) return;
+        const data = event.data;
+        if (!data || typeof data.type !== 'string') return;
+        if (data.type === 'sphere.miniwater.frame.v1' && data.frame) applyFrame(data.frame);
+        if (data.type === 'sphere.miniwater.unity.view' &&
+            ['overview', 'raw', 'treatment', 'delivery'].includes(data.view)) {
+          if (!sendControl('SetView', data.view)) pendingView = data.view;
+        }
+        if (data.type === 'sphere.miniwater.unity.tour' && typeof data.on === 'boolean') {
+          if (!sendControl('SetTour', data.on ? '1' : '0')) pendingTour = data.on;
+        }
+        if (data.type === 'sphere.miniwater.unity.select') {
+          const id = data.equipmentId || data.id;
+          if (['process', 'tank1', 'transfer_pump', 'tank2', 'doser_blue',
+               'doser_yellow', 'delivery_pump', 'tank3'].includes(id)) {
+            if (!sendControl('SelectEquipment', id)) pendingSelection = id;
+          }
+        }
+      });
+      const loader = document.createElement('script');
+      loader.src = assetUrl('MiniWaterWebGL.loader.js');
+      loader.onerror = () => reportError('Could not load the Unity replay.');
+      loader.onload = () => createUnityInstance(document.getElementById('unity-canvas'), {
+        arguments: [],
+        dataUrl: assetUrl('MiniWaterWebGL.data'),
+        frameworkUrl: assetUrl('MiniWaterWebGL.framework.js'),
+        codeUrl: assetUrl('MiniWaterWebGL.wasm'),
+        streamingAssetsUrl: 'StreamingAssets',
+        companyName: "DefaultCompany",
+        productName: "MiniWater 3D Replay",
+        productVersion: "1.0"
+      }).then((instance) => {
+        unity = instance;
+        status.remove();
+        if (window.parent !== window) {
+          window.parent.postMessage({ type: 'sphere.miniwater.unity.ready' }, window.location.origin);
+        }
+        if (pendingFrame) { applyFrame(pendingFrame); pendingFrame = null; }
+        if (pendingView) { sendControl('SetView', pendingView); pendingView = null; }
+        if (pendingTour !== null) { sendControl('SetTour', pendingTour ? '1' : '0'); pendingTour = null; }
+        if (pendingSelection) { sendControl('SelectEquipment', pendingSelection); pendingSelection = null; }
+      }).catch((error) => reportError(String(error)));
+      document.body.appendChild(loader);
+    })();
+  </script>
+</body>
+</html>
