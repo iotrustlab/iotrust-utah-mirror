@@ -1,0 +1,5 @@
+User-Agent: *
+Allow: /
+
+Host: https://iotrustlab.com
+Sitemap: https://iotrustlab.com/sitemap.xml
